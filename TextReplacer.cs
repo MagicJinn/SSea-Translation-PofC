@@ -4,59 +4,42 @@ using System.Collections.Generic;
 using System.Linq;
 using System.IO;
 using System;
+using JsonFx.Json;
 
 
 namespace SSea_Translation_PofC;
 
 public class TextReplacementUtility : MonoBehaviour
 {
-    [System.Serializable]
+    [Serializable]
     public class TranslationEntry
     {
         public string originalText;
         public string translatedText;
     }
 
-    [Header("Configuration")]
-    [SerializeField]
-    private string translationFilePath = "translations.json";
-    [SerializeField]
-    private bool includeInactive = true;
-    [SerializeField]
-    private bool persistentObject = true;
+    private const string translationFilePath = "translations.json";
+    private const string exportedtextsFilePath = "exported_texts.json";
+    private readonly JsonReader jsonReader = new JsonReader();
+    private readonly JsonWriter jsonWriter = new JsonWriter();
 
-    private Dictionary<string, string> translationDict;
-    private static TextReplacementUtility instance;
+    private Dictionary<string, string> translationDict = new();
 
     void Awake()
     {
-        if (persistentObject)
-        {
-            if (instance != null)
-            {
-                Destroy(gameObject);
-                return;
-            }
-            instance = this;
-            DontDestroyOnLoad(gameObject);
-        }
+        DontDestroyOnLoad(gameObject);
 
         LoadTranslations();
     }
 
-    void LoadTranslations()
+    void LoadTranslations() // Load translations from the translations.json file
     {
-        translationDict = new Dictionary<string, string>();
-        string fullPath = Path.Combine(Application.persistentDataPath, translationFilePath);
-
-        if (File.Exists(fullPath))
+        if (File.Exists(translationFilePath))
         {
-            string jsonContent = File.ReadAllText(fullPath);
+            string jsonContent = File.ReadAllText(translationFilePath);
             try
             {
-                var serializer = new JsonFx.Json.JsonReader();
-                var jsonData = serializer.Read<Dictionary<string, TranslationEntry[]>>(jsonContent);
-                var entries = jsonData["entries"];
+                var entries = jsonReader.Read<TranslationEntry[]>(jsonContent);
 
                 foreach (var entry in entries)
                 {
@@ -69,10 +52,7 @@ public class TextReplacementUtility : MonoBehaviour
                 Debug.LogError($"Error parsing translation file: {e.Message}");
             }
         }
-        else
-        {
-            Debug.LogError($"Translation file not found at: {fullPath}");
-        }
+        else Debug.LogError($"Translation file not found at: {translationFilePath}");
     }
 
     public void ReplaceAllText()
@@ -83,55 +63,76 @@ public class TextReplacementUtility : MonoBehaviour
             return;
         }
 
-        // Find all text components in the scene
-        var textComponents = FindObjectsOfType<Text>().Where(t => t.gameObject.activeInHierarchy || includeInactive).ToArray();
-        // var tmpComponents = FindObjectsOfType<TextMeshProUGUI>(includeInactive);
-        // var tmpTextComponents = FindObjectsOfType<TextMeshPro>(includeInactive);
+        var textComponents = FindObjectsOfType<Text>()
+            .Where(t => t.gameObject.activeInHierarchy)
+                .ToArray(); // Find all active Text components in the scene (TMPro is not used in SSea)
 
-        int replacementCount = 0;
-
-        // Replace Unity UI Text components
         foreach (var text in textComponents)
         {
-            // Check if the text is empty, contains only numbers, or has no letters
-            if (string.IsNullOrEmpty(text.text) || text.text.Trim().Length == 0 || text.text.All(char.IsDigit) || !text.text.Any(char.IsLetter))
+            if (string.IsNullOrEmpty(text.text) || text.text.Trim().Length == 0 ||
+                text.text.All(char.IsDigit) || !text.text.Any(char.IsLetter))
             {
-                continue; // Skip this text
+                continue; // Skip any empty strings, or strings that do not contain any letters (such as 4/10, " " or "123")
             }
 
-            if (translationDict.TryGetValue(text.text, out string translation))
+            // If strings contain numbers, replace them with placeholders
+            // Examples include: "You've lost {n1} x Echo (new total {n2})."
+            string pattern = text.text;
+            var numbers = System.Text.RegularExpressions.Regex.Matches(text.text, @"\d+")
+                .Cast<System.Text.RegularExpressions.Match>()
+                .Select(m => m.Value)
+                .ToArray();
+
+            for (int i = 0; i < numbers.Length; i++)
             {
-                text.text = translation;
-                replacementCount++;
+                pattern = pattern.Replace(numbers[i], $"{{n{i + 1}}}");
+            }
+
+            if (translationDict.TryGetValue(pattern, out string translationPattern))
+            {
+                // Replace {n1}, {n2}, etc. in translation with original numbers
+                string finalTranslation = translationPattern;
+                for (int i = 0; i < numbers.Length; i++)
+                {
+                    finalTranslation = finalTranslation.Replace($"{{n{i + 1}}}", numbers[i]);
+                }
+
+                text.text = finalTranslation;
+            }
+            else if (translationDict.TryGetValue(text.text, out string directTranslation))
+            {
+                text.text = directTranslation;
             }
         }
-
-        Debug.Log($"Replaced {replacementCount} text elements");
     }
 
     // Optional: Call this when loading a new scene
     public void OnSceneLoaded()
     {
-        ReplaceAllText();
+        // ReplaceAllText();
     }
 
     // Helper method to export current text to JSON format
     public void ExportCurrentText()
     {
-        var textComponents = FindObjectsOfType<Text>().Where(t => t.gameObject.activeInHierarchy || includeInactive).ToArray();
-        var uniqueTexts = new HashSet<string>();
-        var serializer = new JsonFx.Json.JsonWriter();
-
+        var textComponents = FindObjectsOfType<Text>().Where(t => t.gameObject.activeInHierarchy).ToArray();
         // Load existing translations if they exist
-        Dictionary<string, TranslationEntry[]> existingData = new Dictionary<string, TranslationEntry[]>();
-        string exportPath = "exported_texts.json";
+        TranslationEntry[] existingData = [];
+        string exportPath = exportedtextsFilePath;
+
+        var existingEntries = new Dictionary<string, string>();
+
         if (File.Exists(exportPath))
         {
             try
             {
                 string existingJson = File.ReadAllText(exportPath);
-                var reader = new JsonFx.Json.JsonReader();
-                existingData = reader.Read<Dictionary<string, TranslationEntry[]>>(existingJson);
+                existingData = jsonReader.Read<TranslationEntry[]>(existingJson);
+
+                foreach (var entry in existingData)
+                {
+                    existingEntries[entry.originalText] = entry.translatedText;
+                }
             }
             catch (Exception e)
             {
@@ -139,52 +140,69 @@ public class TextReplacementUtility : MonoBehaviour
             }
         }
 
-        // Collect current texts
+        // Helper function to convert numbers to placeholders
+        Dictionary<string, List<string>> patternGroups = new Dictionary<string, List<string>>();
+
         foreach (var text in textComponents)
         {
             if (string.IsNullOrEmpty(text.text) || text.text.Trim().Length == 0 ||
                 text.text.All(char.IsDigit) || !text.text.Any(char.IsLetter))
             {
-                continue;
+                continue; // Skip any empty strings, or strings that do not contain any letters
             }
-            uniqueTexts.Add(text.text);
+
+            // Create pattern by replacing numbers with {n1}, {n2}, etc.
+            string pattern = text.text;
+            var numbers = System.Text.RegularExpressions.Regex.Matches(text.text, @"\d+")
+                .Cast<System.Text.RegularExpressions.Match>()
+                .Select(m => m.Value)
+                .ToArray();
+
+            for (int i = 0; i < numbers.Length; i++)
+            {
+                pattern = pattern.Replace(numbers[i], $"{{n{i + 1}}}");
+            }
+
+            if (!patternGroups.ContainsKey(pattern))
+            {
+                patternGroups[pattern] = new List<string>();
+            }
+            patternGroups[pattern].Add(text.text);
         }
 
-        // Merge with existing entries
-        var existingEntries = existingData.ContainsKey("entries") ?
-            existingData["entries"].ToDictionary(e => e.originalText, e => e.translatedText) :
-            new Dictionary<string, string>();
-
-        // Create merged entries array
-        var mergedEntries = uniqueTexts
-            .Select(text => new TranslationEntry
+        // Create merged entries array, using patterns when applicable
+        var mergedEntries = patternGroups
+            .SelectMany(group =>
             {
-                originalText = text,
-                translatedText = existingEntries.ContainsKey(text) ? existingEntries[text] : text
+                // If we have multiple entries that match the same pattern, use the pattern as the text (may or may not work)
+                if (group.Value.Count > 1)
+                {
+                    return new TranslationEntry[] { new TranslationEntry
+                    {
+                        originalText = group.Key,
+                        translatedText = existingEntries.ContainsKey(group.Key) ?
+                            existingEntries[group.Key] : group.Key
+                    }};
+                }
+                // Otherwise, use the original text
+                return group.Value.Select(text => new TranslationEntry
+                {
+                    originalText = text,
+                    translatedText = existingEntries.ContainsKey(text) ?
+                        existingEntries[text] : text
+                }).ToArray();
             })
-            .Concat(existingData.ContainsKey("entries") ?
-                existingData["entries"].Where(e => !uniqueTexts.Contains(e.originalText)) :
-                new TranslationEntry[0])
+            .Concat(existingData.Where(e => !patternGroups.Any(g => g.Value.Contains(e.originalText))))
             .ToArray();
 
-        var exportData = new Dictionary<string, TranslationEntry[]>
-        {
-            ["entries"] = mergedEntries
-        };
-
-        string json = serializer.Write(exportData);
-
+        string json = jsonWriter.Write(mergedEntries);
         File.WriteAllText(exportPath, json);
 
-        Debug.Log($"Exported {mergedEntries.Length} unique texts (including {uniqueTexts.Count} new entries) to: {Path.GetFullPath(exportPath)}");
+        Debug.Log($"Exported {mergedEntries.Length} unique texts to: {Path.GetFullPath(exportPath)}");
     }
 
     void Update()
     {
-        // Run ReplaceAllText() every second
-        if (Time.time % 1f < Time.deltaTime)
-        {
-            ReplaceAllText();
-        }
+        ReplaceAllText();
     }
 }

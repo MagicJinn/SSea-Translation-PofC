@@ -2,8 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>net35</TargetFramework>
-    <AssemblyName>SSea_Translation_PofC</AssemblyName>
-    <Product>My first plugin</Product>
+<AssemblyName>SSea_Translation_PofC</AssemblyName>
     <Version>1.0.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
@@ -30,10 +29,12 @@
 
   <ItemGroup>
     <Reference Include="UnityEngine.UI">
-      <HintPath>..\-- Dependencies --\UnityEngine.UI.dll</HintPath>
+<HintPath>dependencies\UnityEngine.UI.dll</HintPath>
+<private>false</private>
     </Reference>
     <Reference Include="JsonFx">
       <HintPath>dependencies\JsonFx.dll</HintPath>
+<private>false</private>
     </Reference>
   </ItemGroup>
 
