@@ -4,6 +4,12 @@ using System.Collections.Generic;
 using System.Linq;
 using System.IO;
 using System;
+using System.Net;
+using System.Text;
+using System.Threading;
+using System.Collections;
+using UnityEngine.SceneManagement;
+using UnityEngine.Networking;
 
 
 namespace SSea_Translation_PofC;
@@ -19,14 +25,17 @@ public class TextReplacementUtility : MonoBehaviour
 
     [Header("Configuration")]
     [SerializeField]
-    private string translationFilePath = "translations.json";
-    [SerializeField]
     private bool includeInactive = true;
     [SerializeField]
     private bool persistentObject = true;
+    [SerializeField]
+    private float checkInterval = 1f; // How often to check for new text (in seconds)
 
-    private Dictionary<string, string> translationDict;
+    private float lastCheckTime = 0f;
+
     private static TextReplacementUtility instance;
+    private HashSet<int> translatedObjects = new HashSet<int>();
+    private bool isCurrentlyTranslating = false;
 
     void Awake()
     {
@@ -34,84 +43,151 @@ public class TextReplacementUtility : MonoBehaviour
         {
             if (instance != null)
             {
-                Destroy(gameObject);
+                Destroy(this.gameObject);
                 return;
             }
             instance = this;
-            DontDestroyOnLoad(gameObject);
+            DontDestroyOnLoad(this.gameObject);
+            SceneManager.sceneLoaded += OnSceneLoaded;
         }
-
-        LoadTranslations();
     }
 
-    void LoadTranslations()
+
+    private IEnumerator TranslateText(Text textComponent, string text, Action<bool> onComplete)
     {
-        translationDict = new Dictionary<string, string>();
-        string fullPath = Path.Combine(Application.persistentDataPath, translationFilePath);
-
-        if (File.Exists(fullPath))
+        Debug.Log($"Starting translation request for text: {text}");
+        using (var request = new UnityWebRequest("http://127.0.0.1:5000/translate", "POST"))
         {
-            string jsonContent = File.ReadAllText(fullPath);
-            try
+            var jsonData = JsonUtility.ToJson(new TranslationRequest
             {
-                var serializer = new JsonFx.Json.JsonReader();
-                var jsonData = serializer.Read<Dictionary<string, TranslationEntry[]>>(jsonContent);
-                var entries = jsonData["entries"];
+                q = text,
+                source = "en",
+                target = "ru"
+            });
 
-                foreach (var entry in entries)
+            byte[] bodyRaw = Encoding.UTF8.GetBytes(jsonData);
+            request.uploadHandler = new UploadHandlerRaw(bodyRaw);
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.SetRequestHeader("Content-Type", "application/json");
+
+            yield return request.Send();
+
+            if (!request.isError && textComponent != null)
+            {
+                try
                 {
-                    translationDict[entry.originalText] = entry.translatedText;
+                    var result = JsonUtility.FromJson<TranslationResponse>(request.downloadHandler.text);
+                    Debug.Log($"Successfully translated: '{text}' -> '{result.translatedText}'");
+
+                    // Check if the text component is still valid and active
+                    if (textComponent != null && textComponent.gameObject != null && textComponent.gameObject.activeInHierarchy)
+                    {
+                        textComponent.text = result.translatedText;
+                        onComplete(true);
+                    }
+                    else
+                    {
+                        Debug.Log("Text component was destroyed or deactivated during translation");
+                        onComplete(false);
+                    }
                 }
-                Debug.Log($"Loaded {translationDict.Count} translations");
+                catch (Exception e)
+                {
+                    Debug.LogError($"Translation parsing error: {e.Message}\nResponse was: {request.downloadHandler.text}");
+                    onComplete(false);
+                }
             }
-            catch (Exception e)
+            else
             {
-                Debug.LogError($"Error parsing translation file: {e.Message}");
+                Debug.LogError($"Translation request failed: {request.error}\nURL: {request.url}\nResponse Code: {request.responseCode}");
+                onComplete(false);
             }
         }
-        else
+    }
+
+    [System.Serializable]
+    private class TranslationRequest
+    {
+        public string q;
+        public string source;
+        public string target;
+    }
+
+    [System.Serializable]
+    private class TranslationResponse
+    {
+        public string translatedText = string.Empty;
+    }
+
+    private IEnumerator ReplaceAllTextCoroutine()
+    {
+        if (!Application.isPlaying) yield break;
+
+        isCurrentlyTranslating = true;
+
+        var textComponents = FindObjectsOfType<Text>()
+            .Where(t => (t.gameObject.activeInHierarchy || includeInactive) &&
+                        !translatedObjects.Contains(t.gameObject.GetInstanceID()))
+            .ToArray();
+
+        if (textComponents.Length == 0)
         {
-            Debug.LogError($"Translation file not found at: {fullPath}");
+            isCurrentlyTranslating = false;
+            yield break;
         }
+
+        foreach (var text in textComponents)
+        {
+            if (text == null || !text.gameObject ||
+                string.IsNullOrEmpty(text.text) ||
+                text.text.Trim().Length == 0 ||
+                text.text.All(char.IsDigit) ||
+                !text.text.Any(char.IsLetter))
+            {
+                if (text != null && text.gameObject != null)
+                {
+                    translatedObjects.Add(text.gameObject.GetInstanceID());
+                }
+                continue;
+            }
+
+            yield return new WaitForSeconds(0.5f);
+
+            bool translationComplete = false;
+            string originalText = text.text;
+
+            // Pass the Text component reference to TranslateText
+            yield return StartCoroutine(TranslateText(text, originalText, (success) =>
+            {
+                translationComplete = true;
+                if (success && text != null && text.gameObject != null)
+                {
+                    translatedObjects.Add(text.gameObject.GetInstanceID());
+                }
+            }));
+
+            while (!translationComplete) yield return null;
+        }
+
+        isCurrentlyTranslating = false;
     }
 
     public void ReplaceAllText()
     {
-        if (translationDict == null || translationDict.Count == 0)
-        {
-            Debug.LogError("No translations loaded!");
-            return;
-        }
-
-        // Find all text components in the scene
-        var textComponents = FindObjectsOfType<Text>().Where(t => t.gameObject.activeInHierarchy || includeInactive).ToArray();
-        // var tmpComponents = FindObjectsOfType<TextMeshProUGUI>(includeInactive);
-        // var tmpTextComponents = FindObjectsOfType<TextMeshPro>(includeInactive);
-
-        int replacementCount = 0;
-
-        // Replace Unity UI Text components
-        foreach (var text in textComponents)
-        {
-            // Check if the text is empty, contains only numbers, or has no letters
-            if (string.IsNullOrEmpty(text.text) || text.text.Trim().Length == 0 || text.text.All(char.IsDigit) || !text.text.Any(char.IsLetter))
-            {
-                continue; // Skip this text
-            }
-
-            if (translationDict.TryGetValue(text.text, out string translation))
-            {
-                text.text = translation;
-                replacementCount++;
-            }
-        }
-
-        Debug.Log($"Replaced {replacementCount} text elements");
+        StartCoroutine(ReplaceAllTextCoroutine());
     }
 
-    // Optional: Call this when loading a new scene
-    public void OnSceneLoaded()
+    // Add this method to reset translations (useful when loading new scenes)
+    public void ResetTranslations()
     {
+        translatedObjects.Clear();
+    }
+
+    // Optional: Add this to your OnSceneLoaded method
+    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        Plugin.Logger.LogWarning("We are starting");
+        ResetTranslations(); // Clear the tracked objects when loading a new scene
         ReplaceAllText();
     }
 
@@ -181,10 +257,11 @@ public class TextReplacementUtility : MonoBehaviour
 
     void Update()
     {
-        // Run ReplaceAllText() every second
-        if (Time.time % 1f < Time.deltaTime)
+        // Only check for new text periodically instead of every frame
+        if (!isCurrentlyTranslating && Time.time - lastCheckTime >= checkInterval)
         {
-            ReplaceAllText();
+            lastCheckTime = Time.time;
+            StartCoroutine(ReplaceAllTextCoroutine());
         }
     }
 }
