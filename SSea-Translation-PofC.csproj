@@ -30,7 +30,7 @@
 
   <ItemGroup>
     <Reference Include="UnityEngine.UI">
-      <HintPath>..\-- Dependencies --\UnityEngine.UI.dll</HintPath>
+      <HintPath>dependencies\UnityEngine.UI.dll</HintPath>
     </Reference>
     <Reference Include="JsonFx">
       <HintPath>dependencies\JsonFx.dll</HintPath>
