@@ -29,7 +29,7 @@ public class Plugin : BaseUnityPlugin
     {
         while (true)
         {
-            replacer.ExportCurrentText();
+            // replacer.ExportCurrentText();
             yield return new WaitForSeconds(1f);
         }
     }
