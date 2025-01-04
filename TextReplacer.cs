@@ -177,12 +177,12 @@ public class TextReplacementUtility : MonoBehaviour
                 // If we have multiple entries that match the same pattern, use the pattern as the text (may or may not work)
                 if (group.Value.Count > 1)
                 {
-                    return new TranslationEntry[] { new TranslationEntry
+                    return [ new TranslationEntry
                     {
                         originalText = group.Key,
                         translatedText = existingEntries.ContainsKey(group.Key) ?
                             existingEntries[group.Key] : group.Key
-                    }};
+                    }];
                 }
                 // Otherwise, use the original text
                 return group.Value.Select(text => new TranslationEntry
